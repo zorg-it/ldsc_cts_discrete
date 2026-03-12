@@ -1,0 +1,13 @@
+name: ldsc_cts
+channels:
+  - conda-forge
+  - bioconda
+
+dependencies:
+  - python=3.10
+  - snakemake
+  - pandas
+  - numpy
+  - pybedtools
+  - bedtools
+  - pip
