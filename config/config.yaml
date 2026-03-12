@@ -1,0 +1,80 @@
+# -----------------------------
+# Required settings
+# -----------------------------
+
+# Cell types to analyze.
+# One BED file is expected for each cell type.
+celltypes:
+  - cortical
+  - inter
+  - Astro
+  - Micro
+  - Oligo
+
+# BED path template.
+# The template MUST contain {celltype}.
+# Example:
+# bed_template: "/data/beds/{celltype}/{celltype}_merge_avg.bed"
+bed_template: "/path/to/beds/{celltype}.bed"
+
+# Prefix to chromosome-specific PLINK reference files.
+# The template MUST contain {chr}.
+# Example:
+# plink_prefix_template: "/data/ref/1000G_EUR_Phase3_plink/{chr}"
+plink_prefix_template: "/path/to/plink_reference/{chr}"
+
+# Full path to ldsc.py
+ldsc_py: "/path/to/ldsc/ldsc.py"
+
+# Path to the annotation script included in this repo or your own copy.
+# Example:
+# make_annot_script: "../scripts/make_annot.py"
+make_annot_script: "../scripts/make_annot.py"
+
+# LDSC baseline annotation prefix.
+# Example expected files:
+#   /path/to/baseline/baseline.1.l2.ldscore.gz
+baseline_prefix: "/path/to/baseline/baseline."
+
+# LDSC weights prefix template; MUST contain {chr}
+# Example expected files:
+#   /path/to/weights/{chr}.l2.ldscore.gz
+weights_prefix_template: "/path/to/weights/{chr}"
+
+# Allele frequency prefix template; MUST contain {chr}
+# Example expected files:
+#   /path/to/frequency/{chr}.frq
+frq_prefix_template: "/path/to/frequency/{chr}"
+
+# Directory containing LDSC-ready munged summary statistics.
+sumstats_dir: "/path/to/sumstats"
+
+# Suffix for trait files in sumstats_dir.
+sumstats_suffix: ".sumstats.gz"
+
+# Optional explicit trait list.
+# Leave empty to auto-discover all files in sumstats_dir matching *sumstats_suffix
+traits: []
+
+# Chromosomes to analyze
+chroms: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22]
+
+# LDSC LD window in kb
+ld_wind_kb: 2000
+
+# -----------------------------
+# Optional output paths
+# -----------------------------
+workdir: "../work"
+ldscore_dir: "../ldscores"
+cts_dir: "../cts"
+results_dir: "../results"
+
+# -----------------------------
+# Optional memory hints (MB)
+# These are hints only; no machine-specific tuning required.
+# -----------------------------
+bed_split_mem_mb: 2000
+make_annot_mem_mb: 32000
+ldscore_mem_mb: 12000
+h2_cts_mem_mb: 12000

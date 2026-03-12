@@ -1,0 +1,262 @@
+configfile: "../config/config.yaml"
+
+import os
+import glob
+from pathlib import Path
+
+# -----------------------------
+# Load config
+# -----------------------------
+CELLTYPES = config.get("celltypes", [])
+BED_TEMPLATE = config.get("bed_template", "")
+PLINK_PREFIX_TEMPLATE = config.get("plink_prefix_template", "")
+BASELINE_PREFIX = config.get("baseline_prefix", "")
+WEIGHTS_PREFIX_TEMPLATE = config.get("weights_prefix_template", "")
+FRQ_PREFIX_TEMPLATE = config.get("frq_prefix_template", "")
+SUMSTATS_DIR = config.get("sumstats_dir", "")
+SUMSTATS_SUFFIX = config.get("sumstats_suffix", ".sumstats.gz")
+TRAITS = config.get("traits", [])
+CHROMS = [str(c) for c in config.get("chroms", list(range(1, 23)))]
+LDSC_PY = config.get("ldsc_py", "")
+MAKE_ANNOT_SCRIPT = config.get("make_annot_script", "../scripts/make_annot.py")
+LD_WIND_KB = config.get("ld_wind_kb", 2000)
+
+WORKDIR = config.get("workdir", "../work")
+LDSCORE_DIR = config.get("ldscore_dir", "../ldscores")
+CTS_DIR = config.get("cts_dir", "../cts")
+RESULTS_DIR = config.get("results_dir", "../results")
+
+BED_SPLIT_MEM_MB = config.get("bed_split_mem_mb", 2000)
+MAKE_ANNOT_MEM_MB = config.get("make_annot_mem_mb", 32000)
+LDSCORE_MEM_MB = config.get("ldscore_mem_mb", 12000)
+H2_CTS_MEM_MB = config.get("h2_cts_mem_mb", 12000)
+
+# -----------------------------
+# Validation helpers
+# -----------------------------
+def require_nonempty(name, value):
+    if value in (None, "", [], {}):
+        raise ValueError(f"Missing required config value: {name}")
+    return value
+
+def prefix_exists(prefix, exts):
+    for chr_ in CHROMS:
+        ok = True
+        for ext in exts:
+            if not os.path.exists(f"{prefix.format(chr=chr_)}{ext}"):
+                ok = False
+                break
+        if ok:
+            return True
+    return False
+
+def validate_config():
+    require_nonempty("celltypes", CELLTYPES)
+    require_nonempty("bed_template", BED_TEMPLATE)
+    require_nonempty("plink_prefix_template", PLINK_PREFIX_TEMPLATE)
+    require_nonempty("baseline_prefix", BASELINE_PREFIX)
+    require_nonempty("weights_prefix_template", WEIGHTS_PREFIX_TEMPLATE)
+    require_nonempty("frq_prefix_template", FRQ_PREFIX_TEMPLATE)
+    require_nonempty("sumstats_dir", SUMSTATS_DIR)
+    require_nonempty("ldsc_py", LDSC_PY)
+    require_nonempty("make_annot_script", MAKE_ANNOT_SCRIPT)
+
+    if "{celltype}" not in BED_TEMPLATE:
+        raise ValueError("bed_template must contain {celltype}")
+    if "{chr}" not in PLINK_PREFIX_TEMPLATE:
+        raise ValueError("plink_prefix_template must contain {chr}")
+    if "{chr}" not in WEIGHTS_PREFIX_TEMPLATE:
+        raise ValueError("weights_prefix_template must contain {chr}")
+    if "{chr}" not in FRQ_PREFIX_TEMPLATE:
+        raise ValueError("frq_prefix_template must contain {chr}")
+
+    missing_beds = [ct for ct in CELLTYPES if not os.path.exists(BED_TEMPLATE.format(celltype=ct))]
+    if missing_beds:
+        raise ValueError(f"Missing BED files for celltypes: {', '.join(missing_beds)}")
+
+    if not os.path.exists(LDSC_PY):
+        raise ValueError(f"ldsc.py not found: {LDSC_PY}")
+    if not os.path.exists(MAKE_ANNOT_SCRIPT):
+        raise ValueError(f"make_annot_script not found: {MAKE_ANNOT_SCRIPT}")
+    if not os.path.isdir(SUMSTATS_DIR):
+        raise ValueError(f"sumstats_dir not found: {SUMSTATS_DIR}")
+
+    for chr_ in CHROMS:
+        prefix = PLINK_PREFIX_TEMPLATE.format(chr=chr_)
+        for ext in [".bed", ".bim", ".fam"]:
+            if not os.path.exists(prefix + ext):
+                raise ValueError(f"Missing PLINK reference file: {prefix + ext}")
+
+    for chr_ in CHROMS:
+        for ext in [".l2.ldscore.gz", ".l2.M", ".l2.M_5_50"]:
+            p = WEIGHTS_PREFIX_TEMPLATE.format(chr=chr_) + ext
+            if not os.path.exists(p):
+                raise ValueError(f"Missing weights file: {p}")
+
+    for chr_ in CHROMS:
+        p = FRQ_PREFIX_TEMPLATE.format(chr=chr_) + ".frq"
+        if not os.path.exists(p):
+            raise ValueError(f"Missing frequency file: {p}")
+
+    for chr_ in CHROMS:
+        for ext in [".l2.ldscore.gz", ".l2.M", ".l2.M_5_50", ".annot.gz"]:
+            p = f"{BASELINE_PREFIX}{chr_}{ext}"
+            if not os.path.exists(p):
+                raise ValueError(f"Missing baseline file: {p}")
+
+validate_config()
+
+def discover_traits():
+    traits = []
+    for p in glob.glob(os.path.join(SUMSTATS_DIR, f"*{SUMSTATS_SUFFIX}")):
+        traits.append(os.path.basename(p)[:-len(SUMSTATS_SUFFIX)])
+    return sorted(set(traits))
+
+if not TRAITS:
+    TRAITS = discover_traits()
+
+if not TRAITS:
+    raise ValueError(
+        f"No traits found in {SUMSTATS_DIR} with suffix {SUMSTATS_SUFFIX}. "
+        "Either populate sumstats_dir or set traits explicitly in config.yaml."
+    )
+
+localrules: all, make_ldcts, summarize_results
+
+rule all:
+    input:
+        expand(f"{RESULTS_DIR}/{{trait}}.cell_type_results.txt", trait=TRAITS),
+        f"{RESULTS_DIR}/all_cell_type_results.tsv",
+        f"{CTS_DIR}/all.ldcts"
+
+rule build_celltype_chr_bed:
+    input:
+        lambda wc: BED_TEMPLATE.format(celltype=wc.celltype)
+    output:
+        f"{WORKDIR}/beds/{{celltype}}/{{chr}}.bed"
+    threads: 1
+    resources:
+        mem_mb=BED_SPLIT_MEM_MB
+    shell:
+        r"""
+        mkdir -p $(dirname {output})
+        awk -v chr="{wildcards.chr}" 'BEGIN{{OFS="\t"}} $1==chr {{print $1,$2,$3}}' {input} \
+          | sort -k1,1 -k2,2n > {output}
+        """
+
+rule make_annot:
+    input:
+        bed=f"{WORKDIR}/beds/{{celltype}}/{{chr}}.bed",
+        bim=lambda wc: PLINK_PREFIX_TEMPLATE.format(chr=wc.chr) + ".bim"
+    output:
+        f"{LDSCORE_DIR}/{{celltype}}/{{chr}}.annot.gz"
+    threads: 1
+    resources:
+        mem_mb=MAKE_ANNOT_MEM_MB
+    shell:
+        r"""
+        mkdir -p $(dirname {output})
+        python {MAKE_ANNOT_SCRIPT} \
+            --bed-file {input.bed} \
+            --bimfile {input.bim} \
+            --mem {resources.mem_mb} \
+            --annot-file {output} \
+            --nomerge
+        """
+
+rule compute_ldscore:
+    input:
+        bed=lambda wc: PLINK_PREFIX_TEMPLATE.format(chr=wc.chr) + ".bed",
+        bim=lambda wc: PLINK_PREFIX_TEMPLATE.format(chr=wc.chr) + ".bim",
+        fam=lambda wc: PLINK_PREFIX_TEMPLATE.format(chr=wc.chr) + ".fam",
+        annot=f"{LDSCORE_DIR}/{{celltype}}/{{chr}}.annot.gz"
+    output:
+        ldscore=f"{LDSCORE_DIR}/{{celltype}}/{{chr}}.l2.ldscore.gz",
+        l2M=f"{LDSCORE_DIR}/{{celltype}}/{{chr}}.l2.M",
+        l2M_5_50=f"{LDSCORE_DIR}/{{celltype}}/{{chr}}.l2.M_5_50",
+        log=f"{LDSCORE_DIR}/{{celltype}}/{{chr}}.log"
+    threads: 1
+    resources:
+        mem_mb=LDSCORE_MEM_MB
+    params:
+        outprefix=lambda wc: f"{LDSCORE_DIR}/{wc.celltype}/{wc.chr}",
+        inprefix=lambda wc: PLINK_PREFIX_TEMPLATE.format(chr=wc.chr)
+    shell:
+        r"""
+        python {LDSC_PY} \
+            --l2 \
+            --bfile {params.inprefix} \
+            --ld-wind-kb {LD_WIND_KB} \
+            --annot {input.annot} \
+            --out {params.outprefix}
+        """
+
+rule make_ldcts:
+    input:
+        expand(f"{LDSCORE_DIR}/{{celltype}}/1.l2.ldscore.gz", celltype=CELLTYPES)
+    output:
+        f"{CTS_DIR}/all.ldcts"
+    threads: 1
+    run:
+        os.makedirs(CTS_DIR, exist_ok=True)
+        with open(output[0], "w") as out:
+            for ct in CELLTYPES:
+                out.write(f"{ct}\t{LDSCORE_DIR}/{ct}/\n")
+
+rule run_h2_cts:
+    input:
+        sumstats=lambda wc: os.path.join(SUMSTATS_DIR, f"{wc.trait}{SUMSTATS_SUFFIX}"),
+        ldcts=f"{CTS_DIR}/all.ldcts",
+        cts_ldscores=expand(
+            f"{LDSCORE_DIR}/{{celltype}}/{{chr}}.{{suffix}}",
+            celltype=CELLTYPES,
+            chr=CHROMS,
+            suffix=["l2.ldscore.gz", "l2.M", "l2.M_5_50", "annot.gz"]
+        ),
+        weights=expand(
+            WEIGHTS_PREFIX_TEMPLATE.format(chr="{chr}") + "{suffix}",
+            chr=CHROMS,
+            suffix=[".l2.ldscore.gz", ".l2.M", ".l2.M_5_50"]
+        ),
+        frq=expand(FRQ_PREFIX_TEMPLATE.format(chr="{chr}") + ".frq", chr=CHROMS)
+    output:
+        results=f"{RESULTS_DIR}/{{trait}}.cell_type_results.txt",
+        log=f"{RESULTS_DIR}/{{trait}}.log"
+    threads: 1
+    resources:
+        mem_mb=H2_CTS_MEM_MB
+    params:
+        outprefix=lambda wc: f"{RESULTS_DIR}/{wc.trait}"
+    shell:
+        r"""
+        mkdir -p {RESULTS_DIR}
+        python {LDSC_PY} \
+            --h2-cts {input.sumstats} \
+            --ref-ld-chr {BASELINE_PREFIX} \
+            --ref-ld-chr-cts {input.ldcts} \
+            --w-ld-chr {WEIGHTS_PREFIX_TEMPLATE} \
+            --frqfile-chr {FRQ_PREFIX_TEMPLATE} \
+            --out {params.outprefix}
+        """
+
+rule summarize_results:
+    input:
+        expand(f"{RESULTS_DIR}/{{trait}}.cell_type_results.txt", trait=TRAITS)
+    output:
+        f"{RESULTS_DIR}/all_cell_type_results.tsv"
+    run:
+        files = sorted(glob.glob(f"{RESULTS_DIR}/*.cell_type_results.txt"))
+        header_written = False
+        with open(output[0], "w") as out:
+            for fn in files:
+                trait = os.path.basename(fn).replace(".cell_type_results.txt", "")
+                with open(fn) as f:
+                    lines = [x.rstrip("\n") for x in f if x.strip()]
+                if not lines:
+                    continue
+                header = lines[0]
+                if not header_written:
+                    out.write("trait\t" + header + "\n")
+                    header_written = True
+                for line in lines[1:]:
+                    out.write(trait + "\t" + line + "\n")

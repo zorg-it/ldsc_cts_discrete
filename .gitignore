@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+.snakemake/
+work/
+ldscores/
+cts/
+results/
