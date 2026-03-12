@@ -23,6 +23,55 @@ ldsc_cts_discrete/
 └── .gitignore
 ```
 
+## Requirements
+
+You need:
+
+- Python ≥ 3.10
+- Snakemake
+- bedtools
+- pybedtools
+- pandas
+- numpy
+- LDSC
+
+The easiest way to install these dependencies is using **mamba / conda**.
+
+### 1. Create the conda environment
+
+Move to the repository:
+
+cd ldsc_cts_discrete
+
+Create the environment:
+
+mamba env create -f environment.yml
+
+Activate the environment:
+
+mamba activate ldsc_cts
+
+### 2. Install LDSC
+
+Clone the LDSC repository:
+
+git clone https://github.com/bulik/ldsc.git
+
+This creates a folder:
+
+ldsc/
+
+In config/config.yaml, set the path to ldsc.py:
+
+ldsc_py: "/path/to/ldsc/ldsc.py"
+
+Example:
+
+ldsc_py: "/home/user/tools/ldsc/ldsc.py"
+
+
+
+
 ## What the workflow does
 
 1. Split each BED file by chromosome
